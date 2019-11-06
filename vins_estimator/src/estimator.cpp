@@ -95,7 +95,7 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
     {
         pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
     }
-    if (frame_count != 0) // 在初始化时，第一帧图像特征点数据没有对应的预积分
+    if (frame_count != 0) // 在初始化时，对于第一帧图像特征点，不做imu预积分
     {
         pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity);
         //if(solver_flag != NON_LINEAR)

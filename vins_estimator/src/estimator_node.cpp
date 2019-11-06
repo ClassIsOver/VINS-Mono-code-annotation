@@ -107,18 +107,22 @@ void update()
 
 }
 
-std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>>
-getMeasurements()
+// 从缓存中读取，并按时间戳匹配imu数据和特征点数据，返回所有匹配好的pair
+// 要找的imu数据，包括该帧特征点与上一帧特征点之间的IMU数据，以及该帧后面的第一帧IMU数据。如下图：
+// *     *   (  *       *      *       *   )   *      IMU数据，括号内为与当前帧特征点匹配的
+//   |                               |                图像特征点数据，前一帧和当前帧
+std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> getMeasurements()
 {
     std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
 
     // 直到把imu_buf或者feature_buf中的数据全部取出，才会退出while循环
     while (true)
-    {
+    {   
+        // 检查缓存中是否还有可以尝试配对的imu和特征点数据可以
         if (imu_buf.empty() || feature_buf.empty())
             return measurements;
-
-        // imu_buf队尾元素的时间戳，早于或等于feature_buf队首元素的时间戳（时间偏移补偿后），则需要等待接收IMU数据
+        
+        // imu_buf 的时间戳全都小于等于 feature_buf 的时间戳（时间偏移补偿后）时，需要等待更多IMU数据来覆盖特征点的时间
         if (!(imu_buf.back()->header.stamp.toSec() > feature_buf.front()->header.stamp.toSec() + estimator.td))
         {
             //ROS_WARN("wait for imu, only should happen at the beginning");
@@ -126,23 +130,19 @@ getMeasurements()
             return measurements;
         }
 
-        // imu_buf队首元素的时间戳，晚于或等于feature_buf队首元素的时间戳（时间偏移补偿后），则需要剔除feature_buf队首多余的特征点数据
+        // imu_buf 时间戳全都大于等于 第一个feature_buf 的时间戳（时间偏移补偿后）时，该 feature 无法被覆盖，剔除
         if (!(imu_buf.front()->header.stamp.toSec() < feature_buf.front()->header.stamp.toSec() + estimator.td))
         {
             ROS_WARN("throw img, only should happen at the beginning");
-            feature_buf.pop();
+            feature_buf.pop(); // 剔除
             continue;
         }
+        // 到这里时，说明头部的特征点数据，其时间戳在imu的时间范围内
         sensor_msgs::PointCloudConstPtr img_msg = feature_buf.front(); // 读取feature_buf队首的数据
         feature_buf.pop(); // 剔除feature_buf队首的数据
         
-        std::vector<sensor_msgs::ImuConstPtr> IMUs;
-
-        // 一帧图像特征点数据，对应多帧imu数据,把它们进行对应，然后塞入measurements
-        // 一帧图像特征点数据，与它和上一帧图像特征点数据之间的时间间隔内所有的IMU数据，以及时间戳晚于当前帧图像的第一帧IMU数据对应
-        // 如下图所示：
-        //   *             *             *             *             *            （IMU数据）
-        //                                                      |                 （图像特征点数据）
+        // 获取所有匹配的imu数据
+        std::vector<sensor_msgs::ImuConstPtr> IMUs;        
         while (imu_buf.front()->header.stamp.toSec() < img_msg->header.stamp.toSec() + estimator.td)
         {
             IMUs.emplace_back(imu_buf.front());
@@ -152,6 +152,8 @@ getMeasurements()
 
         if (IMUs.empty())
             ROS_WARN("no imu between two image");
+        
+        // 添加到输出项
         measurements.emplace_back(IMUs, img_msg);
     }
     return measurements;
@@ -241,24 +243,29 @@ void process()
     {
         std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
 
-        // unique_lock对象lk以独占所有权的方式管理mutex对象m_buf的上锁和解锁操作，所谓独占所有权，就是没有其他的 unique_lock对象同时拥有m_buf的所有权，
-        // 新创建的unique_lock对象lk管理Mutex对象m_buf，并尝试调用m_buf.lock()对Mutex对象m_buf进行上锁，如果此时另外某个unique_lock对象已经管理了该Mutex对象m_buf,
+        // 创建unique_lock对象lk，以独占所有权的方式管理mutex对象m_buf的上锁和解锁操作。
+        // 所谓独占所有权，就是没有其他的unique_lock对象同时拥有m_buf的所有权，
+        // lk会尝试调用m_buf.lock()，对m_buf进行上锁，如果此时另外的unique_lock对象已经管理了该Mutex对象m_buf,
         // 则当前线程将会被阻塞；如果此时m_buf本身就处于上锁状态，当前线程也会被阻塞（我猜的）。
-        // 在unique_lock对象lk的声明周期内，它所管理的锁对象m_buf会一直保持上锁状态
+        // 在lk的声明周期内，它所管理的m_buf会一直保持上锁状态。
         std::unique_lock<std::mutex> lk(m_buf);
 
-        // std::condition_variable::wait(std::unique_lock<std::mutex>& lock, Predicate pred)的功能：
-        // while (!pred()) 
-        // {
-        //     wait(lock);
+        // 解释一下下面用到的函数：
+        // std::condition_variable::wait(std::unique_lock<std::mutex>& lock, Predicate pred) {
+        //   while (!pred()) { // 当 pred 为 false 时
+        //     wait(lock);   // 调用wait(lock)阻塞当前线程，释放被lock管理的m_buf
+        //   }
         // }
-        // 当pred为false的时候，才会调用wait(lock)，阻塞当前线程，当同一条件变量在其它线程中调用了notify_*函数时，当前线程被唤醒。
+        // 当同一条件变量在其它线程中调用了notify_*函数时，当前线程被唤醒。
         // 直到pred为ture的时候，退出while循环。
 
-        // [&]{return (measurements = getMeasurements()).size() != 0;}是lamda表达式（匿名函数）
-        // 先调用匿名函数，从缓存队列中读取IMU数据和图像特征点数据，如果measurements为空，则匿名函数返回false，调用wait(lock)，
-        // 释放m_buf（为了使图像和IMU回调函数可以访问缓存队列），阻塞当前线程，等待被con.notify_one()唤醒
-        // 直到measurements不为空时（成功从缓存队列获取数据），匿名函数返回true，则可以退出while循环。
+        // [&]{return (measurements = getMeasurements()).size() != 0;} 则是lamda表达式（匿名函数）
+
+        // 调用lamda表达式，尝试从缓存队列中，读取IMU数据和图像特征点数据，保存到measurements，
+        // |-> 如果没读到，则匿名函数返回false
+        // |   |-> 调用wait(lk)阻塞当前线程，释放m_buf
+        // |        |-> 释放后，图像和IMU回调函数得以访问缓存队列，并调用con.notify_one()唤醒当前线程
+        // |-> measurements不为空时，匿名函数返回true，则退出while循环
         con.wait(lk, [&]
                  {
             return (measurements = getMeasurements()).size() != 0;
@@ -266,9 +273,10 @@ void process()
         lk.unlock(); // 从缓存队列中读取数据完成，解锁
 
         m_estimator.lock();
-        for (auto &measurement : measurements)
+
+        for (auto &measurement : measurements) // 遍历匹配好的特征点数据和imu数据
         {
-            auto img_msg = measurement.second;
+            auto img_msg = measurement.second; // 当前帧的图像特征点数据
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
 
             //遍历该组中的各帧imu数据，进行预积分
@@ -276,7 +284,7 @@ void process()
             {
                 double t = imu_msg->header.stamp.toSec(); // 最新IMU数据的时间戳
                 double img_t = img_msg->header.stamp.toSec() + estimator.td; // 图像特征点数据的时间戳，补偿了通过优化得到的一个时间偏移
-                if (t <= img_t) // 补偿时间偏移后，图像特征点数据的时间戳晚于或等于IMU数据的时间戳
+                if (t <= img_t) // IMU时间戳小于等于特征点的时间戳
                 { 
                     if (current_time < 0) // 第一次接收IMU数据时会出现这种情况
                         current_time = t;
@@ -284,19 +292,15 @@ void process()
                     ROS_ASSERT(dt >= 0);
                     current_time = t; // 更新最近一次接收的IMU数据的时间戳
 
-                    // IMU数据测量值
-                    // 3轴加速度测量值
+                    // IMU测量值：3轴加速度，3轴角速度
                     dx = imu_msg->linear_acceleration.x;
                     dy = imu_msg->linear_acceleration.y;
                     dz = imu_msg->linear_acceleration.z;
-
-                    // 3轴角速度测量值
                     rx = imu_msg->angular_velocity.x;
                     ry = imu_msg->angular_velocity.y;
                     rz = imu_msg->angular_velocity.z;
                     estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
                     //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
-
                 }
                 else // 时间戳晚于图像特征点数据（时间偏移补偿后）的第一帧IMU数据（也是一组measurement中的唯一一帧），对IMU数据进行插值，得到图像帧时间戳对应的IMU数据
                 {
