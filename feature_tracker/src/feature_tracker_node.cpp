@@ -8,7 +8,14 @@
 #include <message_filters/subscriber.h>
 
 #include "feature_tracker.h"
-
+/*
+VINS-Mono将前端封装为一个ROS节点feature_tracker，该节点订阅相机图像话题
+数据后，提取特征点（cv::GoodFeatureToTrack()检测的角点），然后用KLT光流
+进行特征点跟踪。feature_tracker节点将跟踪的特征点作为话题进行发布，供后端
+ROS节点使用。同时feature_tracker_node还会发布标记了特征点的图片，可供
+Rviz显示以供调试。
+原文链接：https://blog.csdn.net/mcw1234/article/details/83039506
+*/
 #define SHOW_UNDISTORTION 0
 
 vector<uchar> r_status;
@@ -18,7 +25,7 @@ queue<sensor_msgs::ImageConstPtr> img_buf;
 ros::Publisher pub_img,pub_match;
 ros::Publisher pub_restart;
 
-FeatureTracker trackerData[NUM_OF_CAM];
+FeatureTracker trackerData[NUM_OF_CAM]; //每个相机的FeatureTracker实例组成的数组
 double first_image_time;
 int pub_count = 1;
 bool first_image_flag = true;
@@ -48,6 +55,8 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     last_image_time = img_msg->header.stamp.toSec();
     // frequency control
+    // 并不是每处理一帧图像，都将特征点检测跟踪结果发布出去。
+    // 数据发布频率由配置参数FREQ给定，通过PUB_THIS_FRAME控制是否发布当前帧的检测跟踪数据
     if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)
     {
         PUB_THIS_FRAME = true;
@@ -82,12 +91,15 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
         ROS_DEBUG("processing camera %d", i);
+        // 对单目相机，或双目相机中的0号相机
         if (i != 1 || !STEREO_TRACK)
+            //输入图像数据，对前一帧图像中的特征点进行金字塔光流跟踪，必要时检测新的特征点对特征点数量进行补充。
             trackerData[i].readImage(ptr->image.rowRange(ROW * i, ROW * (i + 1)), img_msg->header.stamp.toSec());
-        else
+        else //对双目相机中的1号相机，通过LK光流跟踪相机0中的特征点，不额外提取特征点
         {
             if (EQUALIZE)
             {
+                // 进行自适应直方图均衡（处理强度，保证找到足够的feature point）
                 cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
                 clahe->apply(ptr->image.rowRange(ROW * i, ROW * (i + 1)), trackerData[i].cur_img);
             }
@@ -208,11 +220,15 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "feature_tracker");
     ros::NodeHandle n("~");
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
-    readParameters(n);
+    // 读取config_file配置参数,来指定话题名称/相机类型/相机内参/cam-IMU外参/
+    // 视觉特征追踪参数/后端优化参数/imu参数/回环检测的参数
+    readParameters(n); 
 
     for (int i = 0; i < NUM_OF_CAM; i++)
-        trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);
+        //读取每个相机的类型与相机内参，实例化不同camera
+        trackerData[i].readIntrinsicParameter(CAM_NAMES[i]); 
 
+    //如果相机是鱼眼相机，需要读取FISHEYE_MASK，用来去除边缘噪点
     if(FISHEYE)
     {
         for (int i = 0; i < NUM_OF_CAM; i++)
@@ -228,10 +244,12 @@ int main(int argc, char **argv)
         }
     }
 
+    // 从话题 IMAGE_TOPIC 中订阅相机图像数据
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
 
-    pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);
-    pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000);
+    // 发布 feature_point / feature_img / restart_msg话题
+    pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000); //该话题消息为：从相机图像中跟踪的特征点
+    pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000); //该话题消息为：标记出了特征点的图像
     pub_restart = n.advertise<std_msgs::Bool>("restart",1000);
     /*
     if (SHOW_TRACK)

@@ -6,17 +6,25 @@
 #include <ceres/ceres.h>
 using namespace Eigen;
 
+// 用于实现estimator       中的pre_integrations, tmp_pre_integration 对象，进行预积分
+// 用于实现imu_factor      中的pre_integration对象，
+// 用于实现intial_alignment中的pre_integration对象
 class IntegrationBase
 {
   public:
     IntegrationBase() = delete;
     IntegrationBase(const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                     const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
-        : acc_0{_acc_0}, gyr_0{_gyr_0}, linearized_acc{_acc_0}, linearized_gyr{_gyr_0},
-          linearized_ba{_linearized_ba}, linearized_bg{_linearized_bg},
-            jacobian{Eigen::Matrix<double, 15, 15>::Identity()}, covariance{Eigen::Matrix<double, 15, 15>::Zero()},
-          sum_dt{0.0}, delta_p{Eigen::Vector3d::Zero()}, delta_q{Eigen::Quaterniond::Identity()}, delta_v{Eigen::Vector3d::Zero()}
-
+        : acc_0{_acc_0}, 
+        gyr_0{_gyr_0}, 
+        linearized_acc{_acc_0}, 
+        linearized_gyr{_gyr_0},
+        linearized_ba{_linearized_ba}, 
+        linearized_bg{_linearized_bg},
+        jacobian{Eigen::Matrix<double, 15, 15>::Identity()}, 
+        covariance{Eigen::Matrix<double, 15, 15>::Zero()},
+        sum_dt{0.0}, 
+        delta_p{Eigen::Vector3d::Zero()}, delta_q{Eigen::Quaterniond::Identity()}, delta_v{Eigen::Vector3d::Zero()}
     {
         noise = Eigen::Matrix<double, 18, 18>::Zero();
         noise.block<3, 3>(0, 0) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
@@ -27,6 +35,7 @@ class IntegrationBase
         noise.block<3, 3>(15, 15) =  (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
     }
 
+    // x: 添加新的时刻，更新前一时刻
     void push_back(double dt, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyr)
     {
         dt_buf.push_back(dt);
@@ -35,6 +44,7 @@ class IntegrationBase
         propagate(dt, acc, gyr);
     }
 
+    // 重新积分该frame
     void repropagate(const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
     {
         sum_dt = 0.0;
@@ -51,39 +61,51 @@ class IntegrationBase
             propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
     }
 
-    void midPointIntegration(double _dt, 
-                            const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
-                            const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
-                            const Eigen::Vector3d &delta_p, const Eigen::Quaterniond &delta_q, const Eigen::Vector3d &delta_v,
-                            const Eigen::Vector3d &linearized_ba, const Eigen::Vector3d &linearized_bg,
-                            Eigen::Vector3d &result_delta_p, Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
-                            Eigen::Vector3d &result_linearized_ba, Eigen::Vector3d &result_linearized_bg, bool update_jacobian)
+    //中值积分
+    void midPointIntegration(
+      double _dt, 
+      const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
+      const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
+      const Eigen::Vector3d &delta_p, const Eigen::Quaterniond &delta_q, 
+      const Eigen::Vector3d &delta_v,
+      const Eigen::Vector3d &linearized_ba, const Eigen::Vector3d &linearized_bg,
+      Eigen::Vector3d &result_delta_p, Eigen::Quaterniond &result_delta_q, 
+      Eigen::Vector3d &result_delta_v,
+      Eigen::Vector3d &result_linearized_ba, Eigen::Vector3d &result_linearized_bg, 
+      bool update_jacobian)
     {
         //ROS_INFO("midpoint integration");
-        Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
-        Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
-        result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2, un_gyr(2) * _dt / 2);
-        Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
-        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+        // 根据角速度定义旋转角，更新姿态角
+        Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg; // 平均角速度
+        result_delta_q = delta_q * Quaterniond(1, 
+                                               un_gyr(0) * _dt / 2, 
+                                               un_gyr(1) * _dt / 2,
+                                               un_gyr(2) * _dt / 2);  //四元数积分
+
+        //以第一个imu数据所在的imu坐标系作为全局坐标系：
+        Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba); // 前一时刻全局acc
+        Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba); // 当前时刻全局acc
+        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1); // 平均acc
+        
         result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
         result_delta_v = delta_v + un_acc * _dt;
         result_linearized_ba = linearized_ba;
-        result_linearized_bg = linearized_bg;         
+        result_linearized_bg = linearized_bg;
 
         if(update_jacobian)
         {
-            Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
-            Vector3d a_0_x = _acc_0 - linearized_ba;
-            Vector3d a_1_x = _acc_1 - linearized_ba;
+            Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg; //角速度
+            Vector3d a_0_x = _acc_0 - linearized_ba; // acc0
+            Vector3d a_1_x = _acc_1 - linearized_ba; // acc1
             Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
-            R_w_x<<0, -w_x(2), w_x(1),
+            R_w_x<<0, -w_x(2), w_x(1), // hat_w_x
                 w_x(2), 0, -w_x(0),
                 -w_x(1), w_x(0), 0;
-            R_a_0_x<<0, -a_0_x(2), a_0_x(1),
+            R_a_0_x<<0, -a_0_x(2), a_0_x(1), // hat_acc0
                 a_0_x(2), 0, -a_0_x(0),
                 -a_0_x(1), a_0_x(0), 0;
-            R_a_1_x<<0, -a_1_x(2), a_1_x(1),
+            R_a_1_x<<0, -a_1_x(2), a_1_x(1), //hat_acc1
                 a_1_x(2), 0, -a_1_x(0),
                 -a_1_x(1), a_1_x(0), 0;
 
@@ -127,6 +149,7 @@ class IntegrationBase
 
     }
 
+    //从上一时刻0积分到当前时刻1，并更新时刻0到当前时刻
     void propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
     {
         dt = _dt;
@@ -138,10 +161,9 @@ class IntegrationBase
         Vector3d result_linearized_ba;
         Vector3d result_linearized_bg;
 
-        midPointIntegration(_dt, acc_0, gyr_0, _acc_1, _gyr_1, delta_p, delta_q, delta_v,
-                            linearized_ba, linearized_bg,
-                            result_delta_p, result_delta_q, result_delta_v,
-                            result_linearized_ba, result_linearized_bg, 1);
+        midPointIntegration(_dt, acc_0, gyr_0, _acc_1, _gyr_1, // imu观测值
+                                   delta_p,        delta_q,        delta_v,        linearized_ba,        linearized_bg,//当前状态
+                            result_delta_p, result_delta_q, result_delta_v, result_linearized_ba, result_linearized_bg, 1);//更新后
 
         //checkJacobian(_dt, acc_0, gyr_0, acc_1, gyr_1, delta_p, delta_q, delta_v,
         //                    linearized_ba, linearized_bg);
@@ -150,6 +172,7 @@ class IntegrationBase
         delta_v = result_delta_v;
         linearized_ba = result_linearized_ba;
         linearized_bg = result_linearized_bg;
+
         delta_q.normalize();
         sum_dt += dt;
         acc_0 = acc_1;
@@ -158,8 +181,11 @@ class IntegrationBase
     }
 
     // 计算IMU观测残差
-    Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
-                                          const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
+    Eigen::Matrix<double, 15, 1> evaluate(
+        const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, 
+        const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
+        const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, 
+        const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
     {
         Eigen::Matrix<double, 15, 1> residuals;
 
@@ -177,8 +203,9 @@ class IntegrationBase
         Eigen::Quaterniond corrected_delta_q = delta_q * Utility::deltaQ(dq_dbg * dbg);
         Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
-
-        residuals.block<3, 1>(O_P, 0) = Qi.inverse() * (0.5 * G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) - corrected_delta_p;
+        // 公式117
+        residuals.block<3, 1>(O_P, 0) = Qi.inverse() * (0.5 * G * sum_dt * sum_dt 
+          + Pj - Pi - Vi * sum_dt) - corrected_delta_p;
         residuals.block<3, 1>(O_R, 0) = 2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
         residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (G * sum_dt + Vj - Vi) - corrected_delta_v;
         residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
@@ -186,40 +213,39 @@ class IntegrationBase
         return residuals;
     }
 
+  public:
     // 中值积分需要使用前后两个时刻的IMU数据
     double dt; // 前后两个时刻的时间间隔
     Eigen::Vector3d acc_0, gyr_0; // 前一帧IMU数据中的加速度计测量值和陀螺仪测量值
     Eigen::Vector3d acc_1, gyr_1; // 后一帧IMU数据中的加速度计测量值和陀螺仪测量值
 
-    const Eigen::Vector3d linearized_acc, linearized_gyr; // 这一段预积分初始时刻的IMU测量值，作为常量一直保存，在IntegrationBase对象创建时指定
-    Eigen::Vector3d linearized_ba, linearized_bg; // 这一段预积分对应的加速度计偏置和陀螺仪偏置
+    const Eigen::Vector3d linearized_acc, linearized_gyr; // 本段预积分初始时刻的IMU测量值，构建实例时定义，作为常量一直保存
+    Eigen::Vector3d linearized_ba, linearized_bg; // 本段预积分对应的加速度计偏置和陀螺仪偏置
 
     // jacobian: 当前误差状态量关于预积分初始时刻误差状态量的雅可比矩阵
     // covariance: 误差状态的协方差矩阵
     Eigen::Matrix<double, 15, 15> jacobian, covariance;
-    Eigen::Matrix<double, 15, 15> step_jacobian; //似乎是用来调试程序的临时变量
-    Eigen::Matrix<double, 15, 18> step_V; //似乎是用来调试程序的临时变量
+    Eigen::Matrix<double, 15, 15> step_jacobian; //用来测试程序的临时变量
+    Eigen::Matrix<double, 15, 18> step_V;        //用来测试程序的临时变量
     Eigen::Matrix<double, 18, 18> noise; // 误差状态传播方程中的噪声的协方差矩阵
 
     double sum_dt; // 这一段预积分的总时间间隔
 
-    // delta_p、delta_q和delta_v是标称状态的预积分
-    // delta_p表示该段预积分初始时刻本体坐标系下，当前时刻本体坐标系的位置
-    // delta_q表示该段预积分初始时刻本体坐标系下，当前时刻本体坐标系的旋转
-    // delta_v表示该段预积分初始时刻本体坐标系下，当前时刻本体坐标系的速度
+    // delta_p、delta_q、delta_v是标称状态的预积分，
+    // 表示在本段预积分开始时刻的本体坐标系下，当前时刻本体坐标系的 位置、旋转、速度
     Eigen::Vector3d delta_p;
-    Eigen::Quaterniond delta_q;
-    Eigen::Vector3d delta_v;
+    Eigen::Quaterniond delta_q; // 当前时刻本体坐标系的 旋转
+    Eigen::Vector3d delta_v;    // 当前时刻本体坐标系的 速度
 
-    // 该段预积分所使用的IMU数据的缓存vector
+    // 本段预积分使用的IMU数据的缓存
     // 这3个缓存的作用是：当bias变换过大时，需要使用这些数据重新进行预积分
     std::vector<double> dt_buf;
-    std::vector<Eigen::Vector3d> acc_buf;
-    std::vector<Eigen::Vector3d> gyr_buf;
+    std::vector<Eigen::Vector3d> acc_buf; // 本段预积分使用的acc数据的缓存
+    std::vector<Eigen::Vector3d> gyr_buf; // 本段预积分使用的gyro数据的缓存
 
-};
-/*
 
+
+    // 欧拉积分，区分于中值积分的另一种离散时刻积分法
     void eulerIntegration(double _dt, const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                             const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
                             const Eigen::Vector3d &delta_p, const Eigen::Quaterniond &delta_q, const Eigen::Vector3d &delta_v,
@@ -454,4 +480,5 @@ class IntegrationBase
         cout << "bg diff      " << (turb_linearized_bg - result_linearized_bg).transpose() << endl;
         cout << "bg jacob diff" << (step_V.block<3, 3>(12, 9) * turb).transpose() << endl;
     }
-    */
+
+};

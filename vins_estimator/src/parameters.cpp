@@ -21,7 +21,7 @@ std::string EX_CALIB_RESULT_PATH;
 std::string VINS_RESULT_PATH;
 std::string IMU_TOPIC;
 double ROW, COL;
-double TD, TR;
+double TD, TR; // camera imu time delay
 
 template <typename T>
 T readParam(ros::NodeHandle &n, std::string name)

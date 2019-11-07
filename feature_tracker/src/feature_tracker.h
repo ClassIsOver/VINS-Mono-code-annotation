@@ -48,9 +48,18 @@ class FeatureTracker
 
     cv::Mat mask;
     cv::Mat fisheye_mask;
-    cv::Mat prev_img, cur_img, forw_img;
+
+    cv::Mat prev_img, // 上一次“发布”数据时对应的图像帧
+      cur_img, //光流跟踪的前一帧图像，而不是“当前帧”
+      forw_img; //光流跟踪的后一帧图像，真正意义上的“当前帧”
+
     vector<cv::Point2f> n_pts;
-    vector<cv::Point2f> prev_pts, cur_pts, forw_pts;
+
+    vector<cv::Point2f> 
+      prev_pts, //上一次发布的图像中   ，能够被当前帧（forw）跟踪到的特征点
+      cur_pts,  //光流跟踪的前一帧图像中，能够被当前帧（forw）跟踪到的特征点
+      forw_pts; //当前帧中的特征点（除了跟踪到的特征点，可能还包含新检测的特征点）
+
     vector<cv::Point2f> prev_un_pts, cur_un_pts;
     vector<cv::Point2f> pts_velocity;
     vector<int> ids;

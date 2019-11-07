@@ -83,8 +83,8 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
     cv::Mat img;
     TicToc t_r;
     cur_time = _cur_time;
-
-    if (EQUALIZE)
+    
+    if (EQUALIZE)//对图像进行自适应直方图均衡处理
     {
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(3.0, cv::Size(8, 8));
         TicToc t_c;
@@ -110,18 +110,32 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
         TicToc t_o;
         vector<uchar> status;
         vector<float> err;
-        cv::calcOpticalFlowPyrLK(cur_img, forw_img, cur_pts, forw_pts, status, err, cv::Size(21, 21), 3);
 
+        // 光流法追踪   对前一帧的特征点cur_pts进行金字塔光流跟踪，得到forw_pts
+        cv::calcOpticalFlowPyrLK(cur_img,  // 一幅8位输入图像 或 由buildOpticalFlowPyramid()构造的金字塔
+            forw_img,   //与preImg大小和类型相同的输入图像或金字塔
+            cur_pts,    //光流法找到的二维点的vector。点坐标必须是单精度浮点数
+            forw_pts,   //out: 在第二幅图像中计算出的新位置的二维点
+            status,     //out: 标记cur_pts中各个特征点的跟踪状态,
+            err, 
+            cv::Size(21, 21), //每级金字塔的搜索窗口大小
+            3); //金字塔层次数
+
+        // 将跟踪失败的特征点从prev_pts、cur_pts和forw_pts中剔除
         for (int i = 0; i < int(forw_pts.size()); i++)
+        {
             if (status[i] && !inBorder(forw_pts[i]))
+            {
                 status[i] = 0;
-        reduceVector(prev_pts, status);
-        reduceVector(cur_pts, status);
-        reduceVector(forw_pts, status);
-        reduceVector(ids, status);
-        reduceVector(cur_un_pts, status);
-        reduceVector(track_cnt, status);
-        ROS_DEBUG("temporal optical flow costs: %fms", t_o.toc());
+                reduceVector(prev_pts, status);
+                reduceVector(cur_pts, status);
+                reduceVector(forw_pts, status);
+                reduceVector(ids, status);          //更新：特征点id
+                reduceVector(cur_un_pts, status);   //更新：
+                reduceVector(track_cnt, status);    //更新：特征点被跟踪的次数
+                ROS_DEBUG("temporal optical flow costs: %fms", t_o.toc());
+            }
+        }
     }
 
     for (auto &n : track_cnt)
@@ -129,12 +143,15 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
 
     if (PUB_THIS_FRAME)
     {
-        rejectWithF();
+        rejectWithF(); //通过F矩阵剔除outliers
+
+        // 通过设置一个mask，使跟踪的特征点在整幅图像中能够均匀分布
         ROS_DEBUG("set mask begins");
         TicToc t_m;
-        setMask();
+        setMask();// 每选中一个特征点，在mask中将该点周围半径为MIN_DIST的区域设置为0
         ROS_DEBUG("set mask costs %fms", t_m.toc());
 
+        // 新特征点提取
         ROS_DEBUG("detect feature begins");
         TicToc t_t;
         int n_max_cnt = MAX_CNT - static_cast<int>(forw_pts.size());
@@ -146,17 +163,26 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
                 cout << "mask type wrong " << endl;
             if (mask.size() != forw_img.size())
                 cout << "wrong size " << endl;
-            cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
+            
+            // 新特征点提取
+            cv::goodFeaturesToTrack(forw_img, //输入图像（8位或32位单通道图）
+                n_pts,                        //输出检测到的所有角点，类型为vector或数组
+                MAX_CNT - forw_pts.size(),    //限定检测到的点数的最大值
+                0.01,                         //测到的角点的质量水平（通常是0.10到0.01之间的数值，不能大于1.0）
+                MIN_DIST,       // 相邻两个角点的最小距离（小于这个距离得点将进行合并）
+                mask);          // 在mask值为0处不进行角点检测。如果指定，它的维度必须和输入图像一致
         }
         else
             n_pts.clear();
         ROS_DEBUG("detect feature costs: %fms", t_t.toc());
 
+        // 新特征点添加到forw_pts中去，id初始化为-1，track_cnt初始化为1。
         ROS_DEBUG("add feature begins");
         TicToc t_a;
         addPoints();
         ROS_DEBUG("selectFeature costs: %fms", t_a.toc());
     }
+    //将当前帧forw的相关数据赋给上一帧cur
     prev_img = cur_img;
     prev_pts = cur_pts;
     prev_un_pts = cur_un_pts;
@@ -188,6 +214,7 @@ void FeatureTracker::rejectWithF()
         }
 
         vector<uchar> status;
+        // 对极几何 算F 矩阵
         cv::findFundamentalMat(un_cur_pts, un_forw_pts, cv::FM_RANSAC, F_THRESHOLD, 0.99, status);
         int size_a = cur_pts.size();
         reduceVector(prev_pts, status);

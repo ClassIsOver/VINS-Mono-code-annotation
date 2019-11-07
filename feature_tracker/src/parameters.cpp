@@ -11,7 +11,7 @@ int FREQ;
 double F_THRESHOLD;
 int SHOW_TRACK;
 int STEREO_TRACK;
-int EQUALIZE;
+int EQUALIZE; //是否对图像进行自适应直方图均衡
 int ROW;
 int COL;
 int FOCAL_LENGTH;

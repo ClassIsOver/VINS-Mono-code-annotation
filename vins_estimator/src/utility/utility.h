@@ -8,6 +8,7 @@
 class Utility
 {
   public:
+    // 根据小的旋转向量 近似计算四元数
     template <typename Derived>
     static Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)
     {
@@ -33,6 +34,7 @@ class Utility
         return ans;
     }
 
+    // 复制？
     template <typename Derived>
     static Eigen::Quaternion<typename Derived::Scalar> positify(const Eigen::QuaternionBase<Derived> &q)
     {
