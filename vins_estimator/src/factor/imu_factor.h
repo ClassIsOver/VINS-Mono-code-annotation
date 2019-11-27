@@ -29,7 +29,7 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9> {
     Eigen::Vector3d Pj(parameters[2][0], parameters[2][1], parameters[2][2]);
     Eigen::Quaterniond Qj(parameters[2][6], parameters[2][3], parameters[2][4],
                           parameters[2][5]);
-
+    // 9parameter:
     Eigen::Vector3d Vj(parameters[3][0], parameters[3][1], parameters[3][2]);
     Eigen::Vector3d Baj(parameters[3][3], parameters[3][4], parameters[3][5]);
     Eigen::Vector3d Bgj(parameters[3][6], parameters[3][7], parameters[3][8]);
