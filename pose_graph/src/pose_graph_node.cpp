@@ -518,7 +518,7 @@ int main(int argc, char **argv)
             load_flag = 1;
         }
     }
-
+ 
     fsSettings.release();
 
     ros::Subscriber sub_imu_forward = n.subscribe("/vins_estimator/imu_propagate", 2000, imu_forward_callback);
