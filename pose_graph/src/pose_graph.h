@@ -32,7 +32,7 @@
 using namespace DVision;
 using namespace DBoW2;
 
-class PoseGraph
+class PoseGraph 
 {
 public:
 	PoseGraph();
