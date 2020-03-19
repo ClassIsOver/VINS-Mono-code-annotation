@@ -5,6 +5,7 @@ PoseGraph::PoseGraph()
     posegraph_visualization = new CameraPoseVisualization(1.0, 0.0, 1.0, 1.0);
     posegraph_visualization->setScale(0.1);
     posegraph_visualization->setLineWidth(0.01);
+  // 构造posegraph对象的时候，新启一个位姿优化线程
 	t_optimization = std::thread(&PoseGraph::optimize4DoF, this);
     earliest_loop_index = -1;
     t_drift = Eigen::Vector3d(0, 0, 0);
@@ -60,9 +61,11 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     vio_P_cur = w_r_vio * vio_P_cur + w_t_vio;
     vio_R_cur = w_r_vio *  vio_R_cur;
     cur_kf->updateVioPose(vio_P_cur, vio_R_cur);
+
+
     cur_kf->index = global_index;
     global_index++;
-	int loop_index = -1;
+	  int loop_index = -1;
     if (flag_detect_loop)
     {
         TicToc tmp_t;
@@ -72,12 +75,13 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     {
         addKeyFrameIntoVoc(cur_kf);
     }
-	if (loop_index != -1)
-	{
+
+	  if (loop_index != -1) // 检测到回环后
+	  {
         //printf(" %d detect loop with %d \n", cur_kf->index, loop_index);
         KeyFrame* old_kf = getKeyFrame(loop_index);
 
-        if (cur_kf->findConnection(old_kf))
+        if (cur_kf->findConnection(old_kf)) // 计算相对位姿，发送给estimator
         {
             if (earliest_loop_index > loop_index || earliest_loop_index == -1)
                 earliest_loop_index = loop_index;
@@ -96,6 +100,8 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
             double shift_yaw;
             Matrix3d shift_r;
             Vector3d shift_t; 
+            // 根据old frame 和相对位姿能计算出当前帧位姿，也就能得出和已知当前帧位姿的差别
+            //分别计算出shift_r, shift_t，用来更新其他帧位姿
             shift_yaw = Utility::R2ypr(w_R_cur).x() - Utility::R2ypr(vio_R_cur).x();
             shift_r = Utility::ypr2R(Vector3d(shift_yaw, 0, 0));
             shift_t = w_P_cur - w_R_cur * vio_R_cur.transpose() * vio_P_cur; 
@@ -147,6 +153,7 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     pose_stamped.pose.orientation.w = Q.w();
     path[sequence_cnt].poses.push_back(pose_stamped);
     path[sequence_cnt].header = pose_stamped.header;
+    //发送path主题数据，用以显示
 
     if (SAVE_LOOP_PATH)
     {
@@ -216,20 +223,24 @@ void PoseGraph::loadKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     global_index++;
     int loop_index = -1;
     if (flag_detect_loop)
+    {
        loop_index = detectLoop(cur_kf, cur_kf->index);
+    } 
     else
     {
         addKeyFrameIntoVoc(cur_kf);
     }
-    if (loop_index != -1)
+
+    if (loop_index != -1) // 检测到回环后
     {
         printf(" %d detect loop with %d \n", cur_kf->index, loop_index);
         KeyFrame* old_kf = getKeyFrame(loop_index);
-        if (cur_kf->findConnection(old_kf))
+        if (cur_kf->findConnection(old_kf)) // 计算相对位姿，发送给estimator
         {
             if (earliest_loop_index > loop_index || earliest_loop_index == -1)
                 earliest_loop_index = loop_index;
             m_optimize_buf.lock();
+            //将当前关键帧加入到优化队列中进行位姿优化
             optimize_buf.push(cur_kf->index);
             m_optimize_buf.unlock();
         }
@@ -252,7 +263,7 @@ void PoseGraph::loadKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     base_path.poses.push_back(pose_stamped);
     base_path.header = pose_stamped.header;
 
-    //draw local connection
+    //draw local connection 显示序列边
     if (SHOW_S_EDGE)
     {
         list<KeyFrame*>::reverse_iterator rit = keyframelist.rbegin();
@@ -281,6 +292,7 @@ void PoseGraph::loadKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     }
     */
 
+    //keyframelist中加入该关键帧
     keyframelist.push_back(cur_kf);
     //publish();
     m_keyframelist.unlock();
@@ -314,14 +326,15 @@ int PoseGraph::detectLoop(KeyFrame* keyframe, int frame_index)
     }
     TicToc tmp_t;
     //first query; then add this frame into database!
-    QueryResults ret;
+    QueryResults ret; // 结果按照距离升序排列
     TicToc t_query;
+    // 按描述子搜索回环。参数：描述子，检测结果，结果个数上限，结果帧号上限
     db.query(keyframe->brief_descriptors, ret, 4, frame_index - 50);
     //printf("query time: %f", t_query.toc());
     //cout << "Searching for Image " << frame_index << ". " << ret << endl;
 
     TicToc t_add;
-    db.add(keyframe->brief_descriptors);
+    db.add(keyframe->brief_descriptors); // 将描述子加入db
     //printf("add feature time: %f", t_add.toc());
     // ret[0] is the nearest neighbour's score. threshold change with neighour score
     bool find_loop = false;
@@ -344,7 +357,9 @@ int PoseGraph::detectLoop(KeyFrame* keyframe, int frame_index)
             cv::hconcat(loop_result, tmp_image, loop_result);
         }
     }
+
     // a good match with its nerghbour
+    // 判断是否有回环，条件：最近的邻居分数>0.05，其他邻居有一个分数大于0.015
     if (ret.size() >= 1 &&ret[0].Score > 0.05)
         for (unsigned int i = 1; i < ret.size(); i++)
         {
@@ -370,8 +385,9 @@ int PoseGraph::detectLoop(KeyFrame* keyframe, int frame_index)
         cv::waitKey(20);
     }
 */
-    if (find_loop && frame_index > 50)
+    if (find_loop && frame_index > 50) // 有回环，且帧号大于50时，才输出回环
     {
+        //找到最小帧号的匹配帧
         int min_index = -1;
         for (unsigned int i = 0; i < ret.size(); i++)
         {
@@ -408,11 +424,12 @@ void PoseGraph::optimize4DoF()
         int cur_index = -1;
         int first_looped_index = -1;
         m_optimize_buf.lock();
+        //从优化队列当中获取最新的一个关键帧的index
         while(!optimize_buf.empty())
         {
             cur_index = optimize_buf.front();
             first_looped_index = earliest_loop_index;
-            optimize_buf.pop();
+            optimize_buf.pop(); //optimize_buf中取出来的cur_index都是闭环帧的index
         }
         m_optimize_buf.unlock();
         if (cur_index != -1)
@@ -422,11 +439,11 @@ void PoseGraph::optimize4DoF()
             m_keyframelist.lock();
             KeyFrame* cur_kf = getKeyFrame(cur_index);
 
-            int max_length = cur_index + 1;
+            int max_length = cur_index + 1;  //要优化的变量最大个数
 
             // w^t_i   w^q_i
-            double t_array[max_length][3];
-            Quaterniond q_array[max_length];
+            double t_array[max_length][3];   // 每个关键帧的平移向量
+            Quaterniond q_array[max_length]; // 每个关键帧的旋转四元数
             double euler_array[max_length][3];
             double sequence_array[max_length];
 
@@ -448,6 +465,7 @@ void PoseGraph::optimize4DoF()
             int i = 0;
             for (it = keyframelist.begin(); it != keyframelist.end(); it++)
             {
+                // 从第一个有回环的帧开始
                 if ((*it)->index < first_looped_index)
                     continue;
                 (*it)->local_index = i;
@@ -468,16 +486,27 @@ void PoseGraph::optimize4DoF()
 
                 sequence_array[i] = (*it)->sequence;
 
+                //将关键帧列表中所有index>=first_looped_index的关键帧的位姿加入到参数块当中
                 problem.AddParameterBlock(euler_array[i], 1, angle_local_parameterization);
                 problem.AddParameterBlock(t_array[i], 3);
 
+                //设置约束：如果该帧是最早的闭环帧的情况下，则固定它的位姿
                 if ((*it)->index == first_looped_index || (*it)->sequence == 0)
                 {   
                     problem.SetParameterBlockConstant(euler_array[i]);
                     problem.SetParameterBlockConstant(t_array[i]);
                 }
 
-                //add edge
+                //add edge 这里添加的是序列边，是指通过VIO计算的两帧之间的相对位姿，每帧分别与其前边最多四帧构成序列边
+                /**
+                 * 顺序边的测量方程：p̂_{ij}^{i} = {R̂_i^w}^{-1} (p̂_j^w - p̂_i^w)
+                 *                \hat{ψ}_ij = \hat{ψ}_j − \hat{ψ̂}_i
+                 *  两个关键帧之间的相对位姿，由两个关键帧之间的VIO位姿估计变换得到
+                 *   |------------------------------------|
+                 *   |       |----------------------------|
+                 *   |       |        |-------------------|
+                 *   |       |        |         |---------|
+                 * |帧1|    |帧2|    |帧3|     |帧4|     |帧5|*/
                 for (int j = 1; j < 5; j++)
                 {
                   if (i - j >= 0 && sequence_array[i] == sequence_array[i-j])
@@ -499,6 +528,7 @@ void PoseGraph::optimize4DoF()
                 
                 if((*it)->has_loop)
                 {
+                    //必须回环检测的帧号大于或者等于当前帧的回环检测匹配帧号
                     assert((*it)->loop_index >= first_looped_index);
                     int connected_index = getKeyFrame((*it)->loop_index)->local_index;
                     Vector3d euler_conncected = Utility::R2ypr(q_array[connected_index].toRotationMatrix());
@@ -530,6 +560,9 @@ void PoseGraph::optimize4DoF()
                 printf("optimize i: %d p: %f, %f, %f\n", j, t_array[j][0], t_array[j][1], t_array[j][2] );
             }
             */
+
+
+            //根据优化后的参数更新参与优化的关键帧的位姿
             m_keyframelist.lock();
             i = 0;
             for (it = keyframelist.begin(); it != keyframelist.end(); it++)
@@ -547,6 +580,7 @@ void PoseGraph::optimize4DoF()
                 i++;
             }
 
+            //根据当前帧的drift，更新它之后的关键帧位姿
             Vector3d cur_t, vio_t;
             Matrix3d cur_r, vio_r;
             cur_kf->getPose(cur_t, cur_r);
@@ -706,10 +740,12 @@ void PoseGraph::savePoseGraph()
     pFile = fopen (file_path.c_str(),"w");
     //fprintf(pFile, "index time_stamp Tx Ty Tz Qw Qx Qy Qz loop_index loop_info\n");
     list<KeyFrame*>::iterator it;
+    //遍历关键帧列表
     for (it = keyframelist.begin(); it != keyframelist.end(); it++)
     {
         std::string image_path, descriptor_path, brief_path, keypoints_path;
-        if (DEBUG_IMAGE)
+        // 1.保存图像
+        if (DEBUG_IMAGE) 
         {
             image_path = POSE_GRAPH_SAVE_PATH + to_string((*it)->index) + "_image.png";
             imwrite(image_path.c_str(), (*it)->image);
@@ -719,6 +755,7 @@ void PoseGraph::savePoseGraph()
         Vector3d VIO_tmp_T = (*it)->vio_T_w_i;
         Vector3d PG_tmp_T = (*it)->T_w_i;
 
+        //2.往pose_graph.txt文件当中写入位姿图相关信息
         fprintf (pFile, " %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %f %f %f %f %f %f %f %f %d\n",(*it)->index, (*it)->time_stamp, 
                                     VIO_tmp_T.x(), VIO_tmp_T.y(), VIO_tmp_T.z(), 
                                     PG_tmp_T.x(), PG_tmp_T.y(), PG_tmp_T.z(), 
@@ -731,8 +768,10 @@ void PoseGraph::savePoseGraph()
 
         // write keypoints, brief_descriptors   vector<cv::KeyPoint> keypoints vector<BRIEF::bitset> brief_descriptors;
         assert((*it)->keypoints.size() == (*it)->brief_descriptors.size());
+        //3.保存描述子
         brief_path = POSE_GRAPH_SAVE_PATH + to_string((*it)->index) + "_briefdes.dat";
         std::ofstream brief_file(brief_path, std::ios::binary);
+        //4.保存关键点
         keypoints_path = POSE_GRAPH_SAVE_PATH + to_string((*it)->index) + "_keypoints.txt";
         FILE *keypoints_file;
         keypoints_file = fopen(keypoints_path.c_str(), "w");
@@ -765,17 +804,18 @@ void PoseGraph::loadPoseGraph()
     }
     int index;
     double time_stamp;
-    double VIO_Tx, VIO_Ty, VIO_Tz;
-    double PG_Tx, PG_Ty, PG_Tz;
-    double VIO_Qw, VIO_Qx, VIO_Qy, VIO_Qz;
-    double PG_Qw, PG_Qx, PG_Qy, PG_Qz;
+    double VIO_Tx, VIO_Ty, VIO_Tz;  // Translation - VIO
+    double PG_Tx, PG_Ty, PG_Tz;     // Translation - Pose Graph
+    double VIO_Qw, VIO_Qx, VIO_Qy, VIO_Qz; // q - VIO
+    double PG_Qw, PG_Qx, PG_Qy, PG_Qz;     // q - Pose Graph
+    int loop_index;                   // 回环帧id
     double loop_info_0, loop_info_1, loop_info_2, loop_info_3;
     double loop_info_4, loop_info_5, loop_info_6, loop_info_7;
-    int loop_index;
     int keypoints_num;
     Eigen::Matrix<double, 8, 1 > loop_info;
     int cnt = 0;
-    while (fscanf(pFile,"%d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %lf %lf %lf %lf %lf %lf %d", &index, &time_stamp, 
+    while (fscanf(pFile,"%d %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %d %lf %lf %lf %lf %lf %lf %lf %lf %d", 
+                                    &index, &time_stamp, 
                                     &VIO_Tx, &VIO_Ty, &VIO_Tz, 
                                     &PG_Tx, &PG_Ty, &PG_Tz, 
                                     &VIO_Qw, &VIO_Qx, &VIO_Qy, &VIO_Qz, 
@@ -828,7 +868,7 @@ void PoseGraph::loadPoseGraph()
                 earliest_loop_index = loop_index;
             }
 
-        // load keypoints, brief_descriptors   
+        // load keypoints, brief_descriptors   加载关键点和BRIEF描述子
         string brief_path = POSE_GRAPH_SAVE_PATH + to_string(index) + "_briefdes.dat";
         std::ifstream brief_file(brief_path, std::ios::binary);
         string keypoints_path = POSE_GRAPH_SAVE_PATH + to_string(index) + "_keypoints.txt";
@@ -837,6 +877,7 @@ void PoseGraph::loadPoseGraph()
         vector<cv::KeyPoint> keypoints;
         vector<cv::KeyPoint> keypoints_norm;
         vector<BRIEF::bitset> brief_descriptors;
+        //遍历关键点
         for (int i = 0; i < keypoints_num; i++)
         {
             BRIEF::bitset tmp_des;
@@ -857,8 +898,12 @@ void PoseGraph::loadPoseGraph()
         brief_file.close();
         fclose(keypoints_file);
 
-        KeyFrame* keyframe = new KeyFrame(time_stamp, index, VIO_T, VIO_R, PG_T, PG_R, image, loop_index, loop_info, keypoints, keypoints_norm, brief_descriptors);
-        loadKeyFrame(keyframe, 0);
+        // 创建该Node
+        KeyFrame* keyframe = new KeyFrame(
+            time_stamp, index, VIO_T, VIO_R, PG_T, PG_R, image, loop_index,
+            loop_info, keypoints, keypoints_norm, brief_descriptors);
+        // 将该关键帧加入了位姿图显示当中
+        loadKeyFrame(keyframe, false);
         if (cnt % 20 == 0)
         {
             publish();

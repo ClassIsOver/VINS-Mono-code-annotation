@@ -348,7 +348,10 @@ void pubTF(const Estimator &estimator, const std_msgs::Header &header)
 void pubKeyframe(const Estimator &estimator)
 {
     // pub camera pose, 2D-3D points of keyframe
-    if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR && estimator.marginalization_flag == 0)
+    //estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR表示视觉和惯导初始化成功
+    //estimator.marginalization_flag == 0,表示MARGIN_OLD，边缘化删除了最旧的关键帧
+    if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR && 
+    estimator.marginalization_flag == 0)
     {
         int i = WINDOW_SIZE - 2;
         //Vector3d P = estimator.Ps[i] + estimator.Rs[i] * estimator.tic[0];
@@ -367,6 +370,8 @@ void pubKeyframe(const Estimator &estimator)
         odometry.pose.pose.orientation.w = R.w();
         //printf("time: %f t: %f %f %f r: %f %f %f %f\n", odometry.header.stamp.toSec(), P.x(), P.y(), P.z(), R.w(), R.x(), R.y(), R.z());
 
+        // 将the second latest frame关键帧的位姿信息作为topic发出来
+        // pose_graph节点中接收到这个topic后
         pub_keyframe_pose.publish(odometry);
 
 

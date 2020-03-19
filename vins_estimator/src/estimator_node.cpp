@@ -46,11 +46,11 @@ bool init_imu = 1; // true：第一次接收IMU数据
 double last_imu_t = 0; // 最近一帧IMU数据的时间戳
 
 
-// 通过IMU测量值积分更新里程计信息
+// 从IMU测量值imu_msg和上一个PVQ递推得到当前PVQ
 void predict(const sensor_msgs::ImuConstPtr &imu_msg)
 {
     double t = imu_msg->header.stamp.toSec();
-    if (init_imu) // 第一次接收IMU数据
+    if (init_imu) // 第一次接收IMU数据, init_imu初始化的值为1
     {
         latest_time = t;
         init_imu = 0;
@@ -159,8 +159,10 @@ std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointC
   return measurements;
 }
 
+//imu回调函数，将imu_msg存入imu_buf，递推IMU的PQV并发布"imu_propagate”
 void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 {
+    //用时间戳来判断IMU message是否乱序
     if (imu_msg->header.stamp.toSec() <= last_imu_t)
     {
         ROS_WARN("imu message in disorder!");
@@ -172,25 +174,32 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     m_buf.lock();
     imu_buf.push(imu_msg);
     m_buf.unlock();
-    con.notify_one(); // 唤醒getMeasurements()读取缓存imu_buf和feature_buf中的观测数据
+
+    con.notify_one(); // 唤醒process线程, getMeasurements()读取缓存imu_buf和feature_buf中的观测数据
 
     // 通过IMU测量值积分更新并发布里程计信息
-    last_imu_t = imu_msg->header.stamp.toSec(); // 这一行代码似乎重复了，上面有着一模一样的代码
+    last_imu_t = imu_msg->header.stamp.toSec();
 
     {
         std::lock_guard<std::mutex> lg(m_state);
+        //预测函数，这里推算的是tmp_P,tmp_Q,tmp_V
         predict(imu_msg);
         std_msgs::Header header = imu_msg->header;
         header.frame_id = "world";
-        if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR) // VINS初始化已完成，正处于滑动窗口非线性优化状态，如果VINS还在初始化，则不发布里程计信息
-            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header); // 发布里程计信息，发布频率很高（与IMU数据同频），每次获取IMU数据都会及时进行更新，而且发布的是当前的里程计信息。
+
+        // VINS初始化已完成，正处于滑动窗口非线性优化状态，如果VINS还在初始化，则不发布里程计信息
+        if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR) 
+            // 发布predict()处预测的里程计信息，
+            // 发布频率很高（与IMU数据同频），每次获取IMU数据都会及时进行更新，
+            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header); 
             // 还有一个pubOdometry()函数，似乎也是发布里程计信息，但是它是在estimator每次处理完一帧图像特征点数据后才发布的，有延迟，而且频率也不高（至多与图像同频）
     }
 }
 
-
+//feature回调函数，将feature_msg放入feature_buf
 void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
 {
+    //如果是第一个检测到的特征则直接忽略掉，这里直接return了二没有将该feature加入到feature_buf中
     if (!init_feature)
     {
         //skip the first detected feature, which doesn't contain optical flow speed
@@ -202,9 +211,12 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
     m_buf.lock();
     feature_buf.push(feature_msg);
     m_buf.unlock();
-    con.notify_one(); // 唤醒getMeasurements()读取缓存imu_buf和feature_buf中的观测数据
+
+    //唤醒process线程，调用getMeasurements(), 读取缓存imu_buf和feature_buf中的观测数据
+    con.notify_one();
 }
 
+//restart回调函数，收到restart消息时清空feature_buf和imu_buf，估计器重置，时间重置
 void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
 {
     if (restart_msg->data == true)
@@ -227,6 +239,7 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
     return;
 }
 
+//relocalization回调函数，将接收到的匹配的地图点points_msg放入relo_buf,为后边的重定位提供数据支持
 void relocalization_callback(const sensor_msgs::PointCloudConstPtr &points_msg)
 {
     //printf("relocalization callback! \n");
@@ -410,28 +423,32 @@ void process()
 
 int main(int argc, char **argv)
 {
+    //1.相关初始化
     ros::init(argc, argv, "vins_estimator");
     ros::NodeHandle n("~");
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+    //2.参数读取
     readParameters(n); 
+    //3.设置状态估计器的参数
     estimator.setParameter();
 #ifdef EIGEN_DONT_PARALLELIZE
     ROS_DEBUG("EIGEN_DONT_PARALLELIZE");
 #endif
     ROS_WARN("waiting for image and imu...");
 
-    //RViz相关话题
+    //4.注册发布器 //RViz相关话题
     registerPub(n); // 注册visualization.cpp中创建的发布器
-    
+
+    //5.订阅topic(imu, image, ...)
     ros::Subscriber sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay()); // IMU数据
     ros::Subscriber sub_image = n.subscribe("/feature_tracker/feature", 2000, feature_callback); // 图像特征点数据
     ros::Subscriber sub_restart = n.subscribe("/feature_tracker/restart", 2000, restart_callback); // ？？？接收一个bool值，判断是否重启estimator
     ros::Subscriber sub_relo_points = n.subscribe("/pose_graph/match_points", 2000, relocalization_callback); // ？？？根据回环检测信息进行重定位
 
-    // estimator_node中的线程由旧版本中的3个改为现在的1个
-    // 回环检测和全局位姿图优化在新增的一个ROS节点中运行
-    // measurement_process线程的线程函数是process()，在process()中处理VIO后端，包括IMU预积分、松耦合初始化和local BA
+    //6.创建process线程，这个是主线程
     std::thread measurement_process{process}; 
+    // estimator_node中的线程由旧版本中的3个改为现在的1个, 回环检测和全局位姿图优化在新增的一个ROS节点中运行
+    // measurement_process线程的线程函数是process()，在process()中处理VIO后端，包括IMU预积分、松耦合初始化和local BA
     ros::spin();
 
     return 0;

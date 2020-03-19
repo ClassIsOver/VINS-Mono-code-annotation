@@ -291,6 +291,9 @@ void extrinsic_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
     m_process.unlock();
 }
 
+/**
+ * process线程入口函数
+*/
 void process()
 {
     if (!LOOP_CLOSURE)
@@ -411,10 +414,12 @@ void process()
                     //printf("u %f, v %f \n", p_2d_uv.x, p_2d_uv.y);
                 }
 
+                //创建关键帧
                 KeyFrame* keyframe = new KeyFrame(pose_msg->header.stamp.toSec(), frame_index, T, R, image,
                                    point_3d, point_2d_uv, point_2d_normal, point_id, sequence);   
                 m_process.lock();
                 start_flag = 1;
+                //位姿图中加入关键帧，且进行回环检测
                 posegraph.addKeyFrame(keyframe, 1);
                 m_process.unlock();
                 frame_index++;
@@ -480,6 +485,7 @@ int main(int argc, char **argv)
     int LOAD_PREVIOUS_POSE_GRAPH;
     if (LOOP_CLOSURE)
     {
+        // 加载vocabulary文件，用于回环检测
         ROW = fsSettings["image_height"];
         COL = fsSettings["image_width"];
         std::string pkg_path = ros::package::getPath("pose_graph");
@@ -503,7 +509,8 @@ int main(int argc, char **argv)
         fout.close();
         fsSettings.release();
 
-        if (LOAD_PREVIOUS_POSE_GRAPH)
+        // 加载旧的位姿图
+        if (LOAD_PREVIOUS_POSE_GRAPH) 
         {
             printf("load pose graph\n");
             m_process.lock();

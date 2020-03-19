@@ -38,6 +38,7 @@ public:
 	PoseGraph();
 	~PoseGraph();
 	void registerPub(ros::NodeHandle &n);
+  // 添加新的关键帧，进行回环检测，优化，并发布话题
 	void addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop);
 	void loadKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop);
 	void loadVocabulary(std::string voc_path);
@@ -47,6 +48,7 @@ public:
 	nav_msgs::Path base_path;
 	CameraPoseVisualization* posegraph_visualization;
 	void savePoseGraph();
+  // 加载关键帧，包含回环检测信息
 	void loadPoseGraph();
 	void publish();
 	Vector3d t_drift;
@@ -58,23 +60,26 @@ public:
 
 
 private:
+  // 检测回环，计算相对位姿，发送给estimator
 	int detectLoop(KeyFrame* keyframe, int frame_index);
 	void addKeyFrameIntoVoc(KeyFrame* keyframe);
 	void optimize4DoF();
 	void updatePath();
 	list<KeyFrame*> keyframelist;
+
 	std::mutex m_keyframelist;
 	std::mutex m_optimize_buf;
 	std::mutex m_path;
 	std::mutex m_drift;
 	std::thread t_optimization;
-	std::queue<int> optimize_buf;
 
-	int global_index;
+	std::queue<int> optimize_buf;   //待优化队列
+
+	int global_index; // PG 中的关键帧id值，等于当前keyframe的个数？
 	int sequence_cnt;
 	vector<bool> sequence_loop;
 	map<int, cv::Mat> image_pool;
-	int earliest_loop_index;
+	int earliest_loop_index; // 存放的是数据库中第一个和滑动窗口中关键帧形成闭环的关键帧的index
 	int base_sequence;
 
 	BriefDatabase db;

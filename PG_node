@@ -1,0 +1,38 @@
+pose_graph_node.main()
+{
+PoseGraph posegraph;
+
+// 加载vocabulary文件，用于回环检测
+PoseGraph::loadVocabulary(vocabulary_file);
+
+// 加载旧的位姿图
+PoseGraph::loadPoseGraph();
+	PoseGraph::loadKeyFrame(keyframe, false);
+		// 检测回环，计算相对位姿，发送给estimator
+		detectLoop(cur_kf, cur_kf->index);
+		cur_kf->findConnection(old_kf)
+
+		// 将BRIEF加入db，db中没有旧位姿图的算子？
+		addKeyFrameIntoVoc(cur_kf);
+			db.add(keyframe->brief_descriptors);
+
+		keyframelist.push_back(cur_kf);
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
