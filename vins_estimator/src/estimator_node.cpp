@@ -115,14 +115,15 @@ std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointC
 {
   std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
 
-  // 直到把imu_buf或者feature_buf中的数据全部取出，才会退出while循环
   while (true) 
   {
     // 检查缓存中是否还有可以尝试配对的imu和特征点数据可以
     if (imu_buf.empty() || feature_buf.empty())
       return measurements;
 
-        // imu_buf 的时间戳全都小于等于 feature_buf 的时间戳（时间偏移补偿后）时，需要等待更多IMU数据来覆盖特征点的时间
+    // imu_buf 的时间戳全都小于等于 feature_buf 的时间戳（时间偏移补偿后）时，需要等待更多IMU数据来覆盖特征点的时间
+    // *     *     *       *                             IMU数据
+    //                                  |           |    图像特征点数据
     if (!(imu_buf.back()->header.stamp.toSec() > feature_buf.front()->header.stamp.toSec() + estimator.td)) 
     {
       //ROS_WARN("wait for imu, only should happen at the beginning");
@@ -131,6 +132,8 @@ std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointC
     }
 
     // imu_buf 时间戳全都大于等于 第一个feature_buf 的时间戳（时间偏移补偿后）时，该 feature 无法被覆盖，剔除
+    //                    *      *     *      *          IMU数据
+    //              |           |                        图像特征点数据
     if (!(imu_buf.front()->header.stamp.toSec() < feature_buf.front()->header.stamp.toSec() + estimator.td))
     {
         ROS_WARN("throw img, only should happen at the beginning");
@@ -270,7 +273,7 @@ void process()
     //   }
     // }
     // 当同一条件变量在其它线程中调用了notify_*函数时，当前线程被唤醒。
-    // 直到pred为ture的时候，退出while循环。
+    // 直到pred为true的时候，退出while循环。
 
     // [&]{return (measurements = getMeasurements()).size() != 0;} 则是lamda表达式（匿名函数）
 
