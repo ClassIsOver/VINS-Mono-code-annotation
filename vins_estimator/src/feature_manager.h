@@ -85,7 +85,10 @@ class FeatureManager
     void removeFailures();
     void clearDepth(const VectorXd &x);
     VectorXd getDepthVector();
+
+    // 利用三角化，计算特征点的深度
     void triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[]);
+    
     void removeBackShiftDepth(Eigen::Matrix3d marg_R, Eigen::Vector3d marg_P, Eigen::Matrix3d new_R, Eigen::Vector3d new_P);
     void removeBack();
     void removeFront(int frame_count);

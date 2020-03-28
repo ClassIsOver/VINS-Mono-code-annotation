@@ -40,11 +40,12 @@ class Estimator
     bool initialStructure();
     bool visualInitialAlign();
     bool relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l);
-    void slideWindow();
-    void solveOdometry();
+    void slideWindow();   // 被 processImage 调用，滑动窗口
+    void solveOdometry(); // 被 processImage 调用，进入紧耦合优化
     void slideWindowNew();
     void slideWindowOld();
-    void optimization();
+    void optimization(); // 被solveOdometry调用，滑动窗口紧耦合优化
+
     // 将Ps，Vs，Rs，Bas等Vector中的值，覆盖到para_Pose等优化参数数组中
     void vector2double(); 
     void double2vector();
@@ -109,10 +110,10 @@ class Estimator
     double initial_timestamp; // VINS系统完成初始化操作时对应的图像帧的时间戳（需要注意的是，虽然完成了初始化操作，但是初始化不一定成功）
 
     // 用于ceres优化的参数快，在 optimization 中优化
-    double para_Pose[WINDOW_SIZE + 1][SIZE_POSE]; // 要用ceres优化的参数快 - 位姿
+    double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];// 要用ceres优化的参数快 - 位姿
     double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS]; // 要用ceres优化的参数快 - 速度和bias
     double para_Feature[NUM_OF_F][SIZE_FEATURE]; // 要用ceres优化的参数快 - 特征点
-    double para_Ex_Pose[NUM_OF_CAM][SIZE_POSE]; // 要用ceres优化的参数快 - 相机外参
+    double para_Ex_Pose[NUM_OF_CAM][SIZE_POSE];  // 要用ceres优化的参数快 - 相机外参
     double para_Retrive_Pose[SIZE_POSE]; // 要用ceres优化的参数快 - ？？
     double para_Td[1][1]; 
     double para_Tr[1][1];

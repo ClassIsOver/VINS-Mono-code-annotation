@@ -224,6 +224,7 @@ VectorXd FeatureManager::getDepthVector()
     return dep_vec;
 }
 
+// 利用三角化，计算特征点的深度
 void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
 {
     for (auto &it_per_id : feature) // 对于每个id的特征点
