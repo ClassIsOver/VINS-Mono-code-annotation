@@ -32,6 +32,7 @@ bool first_image_flag = true;
 double last_image_time = 0;
 bool init_pub = 0;
 
+// 对图像帧中的特征点使用光流法进行检测处理
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
     if(first_image_flag)

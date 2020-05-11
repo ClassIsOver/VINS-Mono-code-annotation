@@ -281,7 +281,7 @@ void process()
     // |-> 如果没读到，则匿名函数返回false
     // |   |-> 调用wait(lk)阻塞当前线程，释放m_buf
     // |        |-> 释放后，图像和IMU回调函数得以访问缓存队列，并调用con.notify_one()唤醒当前线程
-    // |-> measurements不为空时，匿名函数返回true，则退出while循环
+    // |-> 如果读到了，measurements不为空，匿名函数返回true，则退出while循环
     con.wait(lk, [&]
               {
         return (measurements = getMeasurements()).size() != 0;
@@ -315,6 +315,7 @@ void process()
           rx = imu_msg->angular_velocity.x;
           ry = imu_msg->angular_velocity.y;
           rz = imu_msg->angular_velocity.z;
+          // 对每一个IMU值进行预积分
           estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
           //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
         }
